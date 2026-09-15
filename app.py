@@ -33,22 +33,25 @@ except Exception as e:
     st.stop()
 
 # ---------------------------------------------------------
-# HEADER & SCENARIO GUIDE
+# HEADER & SCENARIO OVERVIEW
 # ---------------------------------------------------------
 st.title("🛡️ Autonomous Vehicle Perception Sentinel")
-st.markdown("### Interactive 3D Cyber-Physical Attack Simulator")
+st.markdown("### Interactive 3D Cyber-Physical Attack & Defense Simulator")
 
-with st.expander("📖 How the Dynamic Laser Attack Works (Click to Read)", expanded=False):
+with st.expander("📖 Interactive Instructions (How to test vehicle reactions)", expanded=False):
     st.markdown("""
-    * **Normal Cruising:** Both cars drive smoothly down the highway.
-    * **Roadside Laser Activation:** When you click **'▶ Play Cruise'**, the car advances. Halfway along the road, an attacker on the sidewalk shoots a pulsed laser beam directly into your roof LiDAR.
-    * **Perception Dilemma:** The laser creates a fake phantom obstacle. Legacy ADAS screams **'APPLY EMERGENCY BRAKE'**, but your ML Sentinel inspects the light physics, suppresses the false alarm, and keeps cruising safely!
+    1. Select **Scenario B: Roadside Laser Attack Sequence**.
+    2. Choose an **AV Defensive Reaction** in the sidebar:
+       * **Unprotected (Aggressive Panic Stop):** Watch the car physically lock its wheels and stop at 0 km/h on the highway!
+       * **Evasive Lane Change:** Watch the car physically steer into the right lane around the phantom!
+       * **Suppressive Braking (Passive Cruise):** The ML firewall ignores the fake obstacle and drives straight through safely.
+    3. Click **'▶ Play Cruise'** under the 3D window to run the animated sequence.
     """)
 
 # ---------------------------------------------------------
 # SIDEBAR CONTROLS
 # ---------------------------------------------------------
-st.sidebar.header("🕹️ Simulation Scenario")
+st.sidebar.header("🕹️ Simulation Setup")
 
 scenario = st.sidebar.radio(
     "Choose Highway Mode:",
@@ -58,24 +61,29 @@ scenario = st.sidebar.radio(
 is_attack = "Scenario B" in scenario
 
 cam_view = st.sidebar.selectbox(
-    "Camera Angle",
+    "Camera Perspective",
     ["Chase Cam (Behind Car)", "Cockpit / Dashcam", "Bird's-Eye (Overhead)"]
 )
 
 st.sidebar.divider()
-st.sidebar.header("⚙️ Vehicle Dynamics & Tuning")
+st.sidebar.header("⚙️ Vehicle Dynamics")
 target_speed = st.sidebar.slider("Cruising Speed (km/h)", 50, 130, 95, 5)
 
 if is_attack:
     st.sidebar.divider()
-    st.sidebar.header("🚨 Attacker & Defense Configuration")
+    st.sidebar.header("🛡️ AV Defense & Reaction Policy")
+    defense_reaction = st.sidebar.selectbox(
+        "Reaction to Perceived Obstacle:",
+        ["1. Unprotected (Aggressive Panic Stop)",
+         "2. ML Defensive Lane Change (Evasive Maneuver)",
+         "3. ML Suppressive Braking (Passive Cruise - Safe)"]
+    )
     laser_power = st.sidebar.slider("Attacker Laser Intensity", 0.60, 1.00, 0.94, 0.02)
-    attack_y_dist = st.sidebar.slider("Phantom Spawn Distance (m ahead)", 8, 20, 12, 1)
-    enable_suppression = st.sidebar.checkbox("Enable ML Braking Suppression (Firewall)", value=True)
+    attack_y_dist = st.sidebar.slider("Phantom Distance (m ahead)", 8, 20, 12, 1)
 else:
+    defense_reaction = "Normal Cruising"
     laser_power = 0.35
     attack_y_dist = 12
-    enable_suppression = True
 
 # ---------------------------------------------------------
 # REALISTIC 3D VEHICLE MESH BUILDER
@@ -121,35 +129,67 @@ def build_car_model_traces(center, body_color, is_ego=False, is_ghost=False):
     return traces
 
 # ---------------------------------------------------------
-# ANIMATION TIMELINE GENERATOR (Cause & Effect Sequence)
+# INTERACTIVE ANIMATION TIMELINE GENERATOR
 # ---------------------------------------------------------
 num_frames = 16
 frames = []
 road_len = 65
 
-# Fixed Roadside Attacker position on the sidewalk (left side)
-attacker_x, attacker_y, attacker_z = -6.0, 18.0, -0.6
+attacker_x, attacker_y, attacker_z = -6.0, 16.0, -0.6
+
+# Trajectory computation based on chosen reaction
+ego_x_coords = []
+ego_y_coords = []
+
+current_y = 1.0
+current_x = 0.0
+
+for step in range(num_frames):
+    attack_active = is_attack and (step >= 5)
+    
+    if not attack_active:
+        # Standard cruising progression
+        current_y = 1.0 + (step / (num_frames - 1)) * 14.0
+        current_x = 0.0
+    else:
+        # What happens after laser hits at step >= 5:
+        if "Aggressive Panic Stop" in defense_reaction:
+            # FREEZE VEHICLE IN PLACE (sudden stop at step 5 position)
+            current_y = ego_y_coords[4] 
+            current_x = 0.0
+        elif "Evasive Lane Change" in defense_reaction:
+            # Shift smoothly into the right lane (X goes from 0.0 to 2.8)
+            lane_shift_t = min(1.0, (step - 5) / 4.0)
+            current_x = lane_shift_t * 2.8
+            current_y = 1.0 + (step / (num_frames - 1)) * 14.0
+        else:
+            # Suppressive Braking: Continue straight through safely
+            current_y = 1.0 + (step / (num_frames - 1)) * 14.0
+            current_x = 0.0
+            
+    ego_x_coords.append(current_x)
+    ego_y_coords.append(current_y)
 
 for step in range(num_frames):
     t = step / (num_frames - 1)
-    
-    # Ego vehicle moves along Y
-    ego_y = 1.0 + t * 14.0
-    lead_y = 24.0 + t * 14.0
+    ego_x = ego_x_coords[step]
+    ego_y = ego_y_coords[step]
+    lead_y = 26.0 + t * 14.0
     
     frame_traces = []
     
-    # 1. Road Surface Ribbon
+    # 1. Road Surface (2 Lanes)
     frame_traces.append(go.Mesh3d(
         x=[-6.5, 6.5, 6.5, -6.5], y=[-2, -2, road_len, road_len],
         z=[-1.73, -1.73, -1.73, -1.73],
         i=[0, 0], j=[1, 2], k=[2, 3], color="#0f172a", opacity=0.95, name="Highway"
     ))
     
-    # 2. Moving Lane Markings
+    # 2. Road Markings (scroll only if vehicle is moving)
+    is_stopped = is_attack and ("Aggressive Panic Stop" in defense_reaction) and (step >= 5)
+    lane_offset = 0 if is_stopped else (step * 2.2) % 6.0
     lane_x, lane_y, lane_z = [], [], []
-    offset = (step * 2.2) % 6.0
-    for ly_base in np.arange(-2 + offset, road_len, 6.0):
+    for ly_base in np.arange(-2 + lane_offset, road_len, 6.0):
         lane_x.extend([0, 0, None])
         lane_y.extend([ly_base, ly_base + 3.0, None])
         lane_z.extend([-1.70, -1.70, None])
@@ -159,34 +199,34 @@ for step in range(num_frames):
     ))
     
     # 3. Ego Vehicle (Blue AV)
-    frame_traces.extend(build_car_model_traces([0.0, ego_y, -0.6], "#38bdf8", is_ego=True))
+    frame_traces.extend(build_car_model_traces([ego_x, ego_y, -0.6], "#38bdf8", is_ego=True))
     
-    # 4. Lead Car (Green Authentic Car)
-    frame_traces.extend(build_car_model_traces([2.3, lead_y, -0.6], "#22c55e", is_ego=False))
+    # 4. Lead Car (Green Car ahead)
+    frame_traces.extend(build_car_model_traces([0.0, lead_y, -0.6], "#22c55e", is_ego=False))
     
     # 5. Attacker Rig on Sidewalk
     if is_attack:
         frame_traces.append(create_cuboid_mesh(
-            [attacker_x, attacker_y, attacker_z], [0.8, 1.2, 1.2], "#475569", 0.9, "Roadside Attacker Rig"
+            [attacker_x, attacker_y, attacker_z], [0.8, 1.2, 1.2], "#475569", 0.9, "Roadside Laser Rig"
         ))
         
-    # 6. DYNAMIC ATTACK ACTIVATION (Strikes when step >= 5)
+    # 6. DYNAMIC ATTACK ACTIVATION (step >= 5)
     laser_active = is_attack and (step >= 5)
     if laser_active:
-        phantom_y = ego_y + attack_y_dist
+        phantom_y = ego_y_coords[4] + attack_y_dist  # Spawn relative to attack point
         
-        # Injected Laser Ray: Fires from attacker rig straight into your roof LiDAR
+        # Red Laser Beam
         frame_traces.append(go.Scatter3d(
-            x=[attacker_x, 0.0],
+            x=[attacker_x, ego_x],
             y=[attacker_y, ego_y - 0.2],
             z=[attacker_z + 0.4, -0.6 + 0.95],
             mode='lines+markers',
             line=dict(color="#ff0000", width=8, dash='solid'),
             marker=dict(size=4, color="#ff0000"),
-            name="⚡ Active Laser Beam"
+            name="⚡ Laser Beam"
         ))
         
-        # Red Phantom Ghost Car created ahead
+        # Red Phantom Ghost Car
         frame_traces.extend(build_car_model_traces([0.0, phantom_y, -0.6], "#ef4444", is_ghost=True))
         
     frames.append(go.Frame(data=frame_traces, name=f"step_{step}"))
@@ -228,34 +268,44 @@ fig_anim = go.Figure(
 )
 
 # ---------------------------------------------------------
-# ML INFERENCE & TELEMETRY
+# ML INFERENCE & DYNAMIC COCKPIT TELEMETRY
 # ---------------------------------------------------------
 if is_attack:
     features = np.array([[85, float(laser_power), 0.02, -0.75, 0.06, 0.10, float(attack_y_dist)]])
     target_info = f"Adversarial Laser Injection at {attack_y_dist}m"
 else:
-    features = np.array([[160, 0.36, 0.13, 0.12, 0.31, 0.88, 24.0]])
-    target_info = "Lead Vehicle (Green Car at 24m)"
+    features = np.array([[160, 0.36, 0.13, 0.12, 0.31, 0.88, 26.0]])
+    target_info = "Lead Vehicle (Green Car at 26m)"
 
 threat_prob = model.predict_proba(features)[0][1]
 is_threat = threat_prob > 0.5
 
+# Dynamically set gauges and messages based on user's reaction choice
 if is_threat:
-    if enable_suppression:
-        current_speed = target_speed
-        brake_force = 0
-        hud_alert = "🚨 BRAKE OVERRIDE SUPPRESSED: LASER SPOOFING DETECTED"
-        safety_status = "Cruising safely at target speed. Fake obstacle ignored."
-    else:
+    if "Aggressive Panic Stop" in defense_reaction:
         current_speed = 0
         brake_force = 100
-        hud_alert = "🚨 EMERGENCY BRAKE ENGAGED: UNPROTECTED ADAS PANIC STOP"
-        safety_status = "Vehicle skidded to 0 km/h! Severe risk of rear-end collision!"
+        hud_badge = "🚨 AGGRESSIVE BRAKING APPLIED (PANIC STOP)"
+        status_desc = "Car violently skidded to 0 km/h on highway. Extreme risk of rear-end collision from traffic behind!"
+        badge_type = "error"
+    elif "Evasive Lane Change" in defense_reaction:
+        current_speed = target_speed - 10
+        brake_force = 20
+        hud_badge = "↪️ EVASIVE LANE CHANGE INITIATED"
+        status_desc = "Car detected optical anomaly and executed a controlled lane change to bypass phantom obstacle."
+        badge_type = "warning"
+    else:
+        current_speed = target_speed
+        brake_force = 0
+        hud_badge = "🛡️ SUPPRESSIVE BRAKING: PHANTOM IGNORED"
+        status_desc = "Laser spoofing identified. Emergency braking suppressed. Cruising safely at target speed."
+        badge_type = "info"
 else:
     current_speed = target_speed
     brake_force = 0
-    hud_alert = "✅ ALL CLEAR: NORMAL ADAPTIVE CRUISE"
-    safety_status = "Maintaining safe following distance behind lead car."
+    hud_badge = "✅ NORMAL ADAPTIVE CRUISE"
+    status_desc = "Authentic lead car verified. Cruising with safe following distance."
+    badge_type = "success"
 
 # ---------------------------------------------------------
 # DASHBOARD LAYOUT
@@ -264,13 +314,13 @@ col_3d, col_panel = st.columns([3, 2])
 
 with col_3d:
     st.subheader("🌐 3D Highway Driving Simulation")
-    st.caption("Click **'▶ Play Cruise'** below the canvas to start the simulation and watch the laser fire!")
+    st.caption("Click **'▶ Play Cruise'** below to observe the car's dynamic response to the laser!")
     st.plotly_chart(fig_anim, use_container_width=True)
 
 with col_panel:
     st.subheader("🏎️ Real-Time Cockpit HUD & Telemetry")
     
-    # Speed & Brake Pressure Gauges
+    # Speed & Brake Gauges
     gauge_fig = go.Figure()
     gauge_fig.add_trace(go.Indicator(
         mode="gauge+number", value=current_speed,
@@ -288,26 +338,27 @@ with col_panel:
         domain={'x': [0.52, 1], 'y': [0, 1]},
         gauge={
             'axis': {'range': [0, 100], 'tickcolor': "#94a3b8"},
-            'bar': {'color': "#ef4444" if brake_force > 50 else "#22c55e"},
+            'bar': {'color': "#ef4444" if brake_force > 50 else ("#f59e0b" if brake_force > 0 else "#22c55e")},
             'steps': [{'range': [0, 30], 'color': '#1e293b'}, {'range': [30, 70], 'color': '#334155'}, {'range': [70, 100], 'color': '#475569'}]
         }
     ))
     gauge_fig.update_layout(height=210, margin=dict(l=10, r=10, t=30, b=10), paper_bgcolor='#0b0f19', font={'color': "#f8fafc"})
     st.plotly_chart(gauge_fig, use_container_width=True)
 
-    # Big Flashing HUD Banner
-    if is_threat:
-        if enable_suppression:
-            st.error(f"**{hud_alert}**")
-            st.info(f"🛡️ **System Action:** {safety_status}")
-        else:
-            st.error(f"**{hud_alert}**")
-            st.warning(f"⚠️ **Hazard Warning:** {safety_status}")
+    # Reaction Alert Badge
+    if badge_type == "error":
+        st.error(f"**{hud_badge}**")
+    elif badge_type == "warning":
+        st.warning(f"**{hud_badge}**")
+    elif badge_type == "info":
+        st.info(f"**{hud_badge}**")
     else:
-        st.success(f"**{hud_alert}**")
-        st.info(f"🛡️ **System Action:** {safety_status}")
+        st.success(f"**{hud_badge}**")
+        
+    st.caption(f"**Vehicle Action:** {status_desc}")
 
-    st.markdown(f"**Target Analyzed:** `{target_info}`")
+    st.markdown("---")
+    st.markdown(f"**Cluster Evaluated:** `{target_info}`")
     st.metric("Adversarial Anomaly Score", f"{threat_prob * 100:.1f}%")
 
     st.markdown("#### 🔬 Real-Time Optical Physics Checks")
